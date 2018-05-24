@@ -172,12 +172,12 @@ def inference(images, is_train=False, should_summarize=True):
 
 
     # conv layers weights
-    conv_weights=[64, 64, 128, 128, 256, 256, 512, 512]
-    conv_stdevs=[5e-2] * 10
-    conv_weight_decays=[5e-4] * 10
-    conv_types=[3] * 10
-    dropout_rates=[0.99, 0.9, 0.9, 0.8, 0.8, 0.7, 0.5, 0.5]
-    pooling_layers=[False, False, True, False, True, False, True, False]
+    conv_weights=[64, 128, 128, 128]
+    conv_stdevs=[5e-2] * 4
+    conv_weight_decays=[5e-4] * 4
+    conv_types=[3] * 4
+    dropout_rates=[0.99, 0.8, 0.8, 0.5]
+    pooling_layers=[False, True, False, False]
     input_tensors=[initial_conv_relu]
 
     for i in xrange(len(conv_weights)):

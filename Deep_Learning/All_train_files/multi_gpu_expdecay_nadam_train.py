@@ -43,7 +43,9 @@ from datetime import datetime
 import os
 import re
 import time
+import random
 import importlib
+import pickle
 
 from distutils.dir_util import copy_tree
 
@@ -55,6 +57,9 @@ import numpy as np
 from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
 
+import cv2
+
+
 NUM_EPOCHS_PER_DECAY = 100.0      # Epochs after which learning rate decays.
 LEARNING_RATE_DECAY_FACTOR = 0.1  # Learning rate decay factor.
 INITIAL_LEARNING_RATE = 0.001     # Initial learning rate.
@@ -62,28 +67,45 @@ INITIAL_LEARNING_RATE = 0.001     # Initial learning rate.
 calculate_rates = True
 FLAGS = tf.app.flags.FLAGS
 
+jpg_pattern = re.compile('\w*\.jpg')
+caltech_basefolder = './Dataset/Train'
+pickle_filename = None
+t_sp = None
+t_cl = None
+v_sp = None
+v_cl = None
+
+all_images_dict = {}
+
 model = None
 model_name = None
 
-INITIAL_IMAGE_SIZE = 32
-IMAGE_SIZE = 32
+IMAGE_SIZE = 100
 
 def initiate_flags():
-    global INITIAL_IMAGE_SIZE, IMAGE_SIZE
+    global IMAGE_SIZE, all_images_dict
+
+    all_dirs = [i for i in os.listdir(caltech_basefolder) if os.path.isdir(os.path.join(caltech_basefolder,i))]
+    all_dirs.sort()
+    for s_class,s_dir in enumerate(all_dirs):
+        full_dir = os.path.join(caltech_basefolder,s_dir)
+        all_files = [i for i in os.listdir(full_dir) if jpg_pattern.search(i) is not None]
+        img_keys = [os.path.join(s_dir,i) for i in all_files]
+        for img_key in img_keys:
+            all_images_dict[img_key] = {'class': s_class, 'data': cv2.imread(os.path.join(caltech_basefolder, img_key) ,cv2.IMREAD_COLOR)}
 
 
     tf.app.flags.DEFINE_string('train_dir', './Current_training/current',
                             """Directory where to write event logs """
                             """and checkpoint.""")
 
-    tf.app.flags.DEFINE_string('input_folder', './TFRecords_files/Current_sets/32_by_32_training_set.tfrecords',
+    tf.app.flags.DEFINE_string('input_folder', './Dataset/Train',
                             """TFRecords training set filename""")
 
-
-    tf.app.flags.DEFINE_integer('num_examples', model.NUM_EXAMPLES_PER_EPOCH_FOR_TRAIN,
+    tf.app.flags.DEFINE_integer('num_examples', len(t_sp),
                                 """Number of examples to run.""")
 
-    tf.app.flags.DEFINE_integer('eval_num_examples', model.NUM_EXAMPLES_PER_EPOCH_FOR_EVAL,
+    tf.app.flags.DEFINE_integer('eval_num_examples', len(v_sp),
                                 """Number of eval examples to run.""")
 
     tf.app.flags.DEFINE_integer('max_steps', 1000000,
@@ -96,153 +118,144 @@ def initiate_flags():
     tf.app.flags.DEFINE_string('best_dir', './Current_training/best',
                                 """Best eval dir.""")                            
     
-    INITIAL_IMAGE_SIZE = model.IMAGE_SIZE
     IMAGE_SIZE = model.IMAGE_SIZE
 
 
-def _parse_function_no_distortion(example_proto):
-    features = {"image": tf.FixedLenFeature((), tf.string, default_value=""),
-                "label": tf.FixedLenFeature((), tf.int64, default_value=0)}
-    parsed_features = tf.parse_single_example(example_proto, features)
-    vector_decoded = tf.reshape(tf.decode_raw(parsed_features["image"], tf.uint8), [
-                                INITIAL_IMAGE_SIZE * INITIAL_IMAGE_SIZE * 3])
-    red_decoded = tf.slice(vector_decoded, [0], [
-                           INITIAL_IMAGE_SIZE * INITIAL_IMAGE_SIZE])
-    green_decoded = tf.slice(vector_decoded, [
-                             INITIAL_IMAGE_SIZE * INITIAL_IMAGE_SIZE], [INITIAL_IMAGE_SIZE * INITIAL_IMAGE_SIZE])
-    blue_decoded = tf.slice(vector_decoded, [
-                            2 * INITIAL_IMAGE_SIZE * INITIAL_IMAGE_SIZE], [INITIAL_IMAGE_SIZE * INITIAL_IMAGE_SIZE])
+def get_image_batch(index, train = True):
+    global t_sp, t_cl
 
-    red_decoded = tf.reshape(
-        red_decoded, [INITIAL_IMAGE_SIZE, INITIAL_IMAGE_SIZE, 1])
-    green_decoded = tf.reshape(
-        green_decoded, [INITIAL_IMAGE_SIZE, INITIAL_IMAGE_SIZE, 1])
-    blue_decoded = tf.reshape(
-        blue_decoded, [INITIAL_IMAGE_SIZE, INITIAL_IMAGE_SIZE, 1])
+    if train and index == 0:
+        c = list(zip(t_sp, t_cl))
+        random.shuffle(c)
+        t_sp, t_cl = zip(*c)
 
-    image_decoded = tf.concat([red_decoded, green_decoded, blue_decoded], 2)
-    image_decoded = tf.cast(image_decoded, tf.float32)
+    full_sp = t_sp if train else v_sp
+    full_cl = t_cl if train else v_cl
 
-    final_image = tf.image.per_image_standardization(image_decoded)
-    return final_image, tf.cast(parsed_features["label"], tf.int32)
+    last_index = (index+FLAGS.batch_size) if (index+FLAGS.batch_size) < len(full_sp) else len(full_sp)
+
+    extra_examples = []
+    extra_classes = []
+    if index+FLAGS.batch_size > len(full_sp):
+        difference = index+FLAGS.batch_size - len(full_sp)
+        sample = random.sample(xrange(len(full_sp)), difference)
+        extra_examples = [full_sp[i] for i in sample]
+        extra_classes = [full_cl[i] for i in sample]
+
+    out_batch = full_sp[index:last_index] + extra_examples
+    out_classes = full_cl[index:last_index] + extra_classes
+
+    def fix_size(img):
+        return cv2.resize(img, (IMAGE_SIZE, IMAGE_SIZE, 3) , interpolation = cv2.INTER_LANCZOS)
+
+    return np.array([fix_size(all_images_dict[i]['data']) for i in out_batch]), np.array(out_classes)
 
 
-def _parse_function(example_proto):
-    features = {"image": tf.FixedLenFeature((), tf.string, default_value=""),
-                "label": tf.FixedLenFeature((), tf.int64, default_value=0)}
-    parsed_features = tf.parse_single_example(example_proto, features)
-    vector_decoded = tf.reshape(tf.decode_raw(parsed_features["image"], tf.uint8), [
-                                INITIAL_IMAGE_SIZE * INITIAL_IMAGE_SIZE * 3])
+def _normalize_input(raw_image_batch):
+    def _normalize_single_image(image_decoded):
+        final_image = tf.image.per_image_standardization(image_decoded)
+        return final_image        
 
-    red_decoded = tf.slice(vector_decoded, [0], [
-                           INITIAL_IMAGE_SIZE * INITIAL_IMAGE_SIZE])
-    green_decoded = tf.slice(vector_decoded, [
-                             INITIAL_IMAGE_SIZE * INITIAL_IMAGE_SIZE], [INITIAL_IMAGE_SIZE * INITIAL_IMAGE_SIZE])
-    blue_decoded = tf.slice(vector_decoded, [
-                            2 * INITIAL_IMAGE_SIZE * INITIAL_IMAGE_SIZE], [INITIAL_IMAGE_SIZE * INITIAL_IMAGE_SIZE])
+    return tf.map_fn(_normalize_single_image, raw_image_batch)
 
-    red_decoded = tf.reshape(
-        red_decoded, [INITIAL_IMAGE_SIZE, INITIAL_IMAGE_SIZE, 1])
-    green_decoded = tf.reshape(
-        green_decoded, [INITIAL_IMAGE_SIZE, INITIAL_IMAGE_SIZE, 1])
-    blue_decoded = tf.reshape(
-        blue_decoded, [INITIAL_IMAGE_SIZE, INITIAL_IMAGE_SIZE, 1])
+def _augment_input(raw_image_batch):
 
-    image_decoded = tf.concat([red_decoded, green_decoded, blue_decoded], 2)
-    image_decoded = tf.cast(image_decoded, tf.float32)
+    def _augment_single_image(image_decoded):
 
-    brightness_percentage = tf.random_uniform(
-        [], minval=0, maxval=1, dtype=tf.float32)
-    contrast_percentage = tf.random_uniform(
-        [], minval=0, maxval=1, dtype=tf.float32)
-    hue_percentage = tf.random_uniform(
-        [], minval=0, maxval=1, dtype=tf.float32)
-    saturation_percentage = tf.random_uniform(
-        [], minval=0, maxval=1, dtype=tf.float32)
-    rotation_percentage = tf.random_uniform(
-        [], minval=0, maxval=1, dtype=tf.float32)
-    zoom_percentage = tf.random_uniform(
-        [], minval=0, maxval=1, dtype=tf.float32)
-    skew_x_percentage = tf.random_uniform(
-        [], minval=0, maxval=1, dtype=tf.float32)
-    skew_y_percentage = tf.random_uniform(
-        [], minval=0, maxval=1, dtype=tf.float32)
-    translate_percentage = tf.random_uniform(
-        [], minval=0, maxval=1, dtype=tf.float32)
+        brightness_percentage = tf.random_uniform(
+            [], minval=0, maxval=1, dtype=tf.float32)
+        contrast_percentage = tf.random_uniform(
+            [], minval=0, maxval=1, dtype=tf.float32)
+        hue_percentage = tf.random_uniform(
+            [], minval=0, maxval=1, dtype=tf.float32)
+        saturation_percentage = tf.random_uniform(
+            [], minval=0, maxval=1, dtype=tf.float32)
+        rotation_percentage = tf.random_uniform(
+            [], minval=0, maxval=1, dtype=tf.float32)
+        zoom_percentage = tf.random_uniform(
+            [], minval=0, maxval=1, dtype=tf.float32)
+        skew_x_percentage = tf.random_uniform(
+            [], minval=0, maxval=1, dtype=tf.float32)
+        skew_y_percentage = tf.random_uniform(
+            [], minval=0, maxval=1, dtype=tf.float32)
+        translate_percentage = tf.random_uniform(
+            [], minval=0, maxval=1, dtype=tf.float32)
 
-    image_decoded = tf.image.random_flip_left_right(image_decoded)
+        image_decoded = tf.image.random_flip_left_right(image_decoded)
 
-    angle = tf.random_uniform(
-        [1], minval=(-1 * (math.pi / 4)), maxval=math.pi / 4, dtype=tf.float32)
-    image_rotated = tf.contrib.image.rotate(
-        image_decoded, angle, interpolation='BILINEAR')
-    image_decoded = tf.cond(rotation_percentage < 0.4,
-                            lambda: image_rotated, lambda: image_decoded)
+        angle = tf.random_uniform(
+            [1], minval=(-1 * (math.pi / 4)), maxval=math.pi / 4, dtype=tf.float32)
+        image_rotated = tf.contrib.image.rotate(
+            image_decoded, angle, interpolation='BILINEAR')
+        image_decoded = tf.cond(rotation_percentage < 0.4,
+                                lambda: image_rotated, lambda: image_decoded)
 
-    image_brightness = tf.image.random_brightness(image_decoded, max_delta=0.8)
-    image_decoded = tf.cond(brightness_percentage < 0.3,
-                            lambda: image_brightness, lambda: image_decoded)
+        image_brightness = tf.image.random_brightness(image_decoded, max_delta=0.8)
+        image_decoded = tf.cond(brightness_percentage < 0.3,
+                                lambda: image_brightness, lambda: image_decoded)
 
-    image_contrast = tf.image.random_contrast(
-        image_decoded, lower=0.7, upper=1.5)
-    image_decoded = tf.cond(contrast_percentage < 0.3,
-                            lambda: image_contrast, lambda: image_decoded)
+        image_contrast = tf.image.random_contrast(
+            image_decoded, lower=0.7, upper=1.5)
+        image_decoded = tf.cond(contrast_percentage < 0.3,
+                                lambda: image_contrast, lambda: image_decoded)
 
-    image_hue = tf.image.random_hue(image_decoded, max_delta=0.5)
-    image_decoded = tf.cond(hue_percentage < 0.1,
-                            lambda: image_hue, lambda: image_decoded)
+        image_hue = tf.image.random_hue(image_decoded, max_delta=0.5)
+        image_decoded = tf.cond(hue_percentage < 0.1,
+                                lambda: image_hue, lambda: image_decoded)
 
-    image_saturation = tf.image.random_saturation(
-        image_decoded, lower=0.5, upper=1.5)
-    image_decoded = tf.cond(saturation_percentage < 0.3,
-                            lambda: image_saturation, lambda: image_decoded)
+        image_saturation = tf.image.random_saturation(
+            image_decoded, lower=0.5, upper=1.5)
+        image_decoded = tf.cond(saturation_percentage < 0.3,
+                                lambda: image_saturation, lambda: image_decoded)
 
-    zoom_scale = tf.random_uniform(
-        [], minval=0.9, maxval=1.1, dtype=tf.float32)
-    new_size = tf.constant(
-        [INITIAL_IMAGE_SIZE, INITIAL_IMAGE_SIZE], dtype=tf.float32) * zoom_scale
-    new_size = tf.cast(new_size, tf.int32)
-    image_zoom = tf.image.resize_images(image_decoded, new_size)
-    image_zoom = tf.image.resize_image_with_crop_or_pad(
-        image_zoom, INITIAL_IMAGE_SIZE, INITIAL_IMAGE_SIZE)
-    image_decoded = tf.cond(zoom_percentage < 0.4,
-                            lambda: image_zoom, lambda: image_decoded)
+        zoom_scale = tf.random_uniform(
+            [], minval=0.9, maxval=1.1, dtype=tf.float32)
+        new_size = tf.constant(
+            [IMAGE_SIZE, IMAGE_SIZE], dtype=tf.float32) * zoom_scale
+        new_size = tf.cast(new_size, tf.int32)
+        image_zoom = tf.image.resize_images(image_decoded, new_size)
+        image_zoom = tf.image.resize_image_with_crop_or_pad(
+            image_zoom, IMAGE_SIZE, IMAGE_SIZE)
+        image_decoded = tf.cond(zoom_percentage < 0.4,
+                                lambda: image_zoom, lambda: image_decoded)
 
-    skew_x_angle = tf.random_uniform(
-        [1], minval=(-1 * (math.pi / 12)), maxval=math.pi / 12, dtype=tf.float32)
-    skew_x_tan = tf.tan(skew_x_angle)
-    skew_x_vector_1 = tf.constant([1], dtype=tf.float32)
-    skew_x_vector_2 = tf.constant([0, 0, 1, 0, 0, 0], dtype=tf.float32)
-    skew_x_vector = tf.concat([skew_x_vector_1,skew_x_tan, skew_x_vector_2],0)
-    skewed_x_image = tf.contrib.image.transform(image_decoded, skew_x_vector, interpolation='BILINEAR')
-    image_decoded = tf.cond(skew_x_percentage < 0.1,
-                            lambda: skewed_x_image, lambda: image_decoded)
+        skew_x_angle = tf.random_uniform(
+            [1], minval=(-1 * (math.pi / 12)), maxval=math.pi / 12, dtype=tf.float32)
+        skew_x_tan = tf.tan(skew_x_angle)
+        skew_x_vector_1 = tf.constant([1], dtype=tf.float32)
+        skew_x_vector_2 = tf.constant([0, 0, 1, 0, 0, 0], dtype=tf.float32)
+        skew_x_vector = tf.concat([skew_x_vector_1,skew_x_tan, skew_x_vector_2],0)
+        skewed_x_image = tf.contrib.image.transform(image_decoded, skew_x_vector, interpolation='BILINEAR')
+        image_decoded = tf.cond(skew_x_percentage < 0.1,
+                                lambda: skewed_x_image, lambda: image_decoded)
 
-    skew_y_angle = tf.random_uniform(
-        [1], minval=(-1 * (math.pi / 12)), maxval=math.pi / 6, dtype=tf.float32)
-    skew_y_tan = tf.tan(skew_y_angle)
-    skew_y_vector_1 = tf.constant([1, 0, 0], dtype=tf.float32)
-    skew_y_vector_2 = tf.constant([1, 0, 0, 0], dtype=tf.float32)
-    skew_y_vector = tf.concat([skew_y_vector_1,skew_y_tan, skew_y_vector_2],0)
-    skewed_y_image = tf.contrib.image.transform(image_decoded, skew_y_vector, interpolation='BILINEAR')
-    image_decoded = tf.cond(skew_y_percentage < 0.1,
-                            lambda: skewed_y_image, lambda: image_decoded)
+        skew_y_angle = tf.random_uniform(
+            [1], minval=(-1 * (math.pi / 12)), maxval=math.pi / 6, dtype=tf.float32)
+        skew_y_tan = tf.tan(skew_y_angle)
+        skew_y_vector_1 = tf.constant([1, 0, 0], dtype=tf.float32)
+        skew_y_vector_2 = tf.constant([1, 0, 0, 0], dtype=tf.float32)
+        skew_y_vector = tf.concat([skew_y_vector_1,skew_y_tan, skew_y_vector_2],0)
+        skewed_y_image = tf.contrib.image.transform(image_decoded, skew_y_vector, interpolation='BILINEAR')
+        image_decoded = tf.cond(skew_y_percentage < 0.1,
+                                lambda: skewed_y_image, lambda: image_decoded)
 
-    translate_y = tf.random_uniform(
-        [1], minval=(-1 * (INITIAL_IMAGE_SIZE / 5)), maxval=INITIAL_IMAGE_SIZE / 6, dtype=tf.float32)
-    translate_x = tf.random_uniform(
-        [1], minval=(-1 * (INITIAL_IMAGE_SIZE / 5)), maxval=INITIAL_IMAGE_SIZE / 6, dtype=tf.float32)
-    translate_vector_1 = tf.constant([1, 0], dtype=tf.float32)
-    translate_vector_2 = tf.constant([0, 1], dtype=tf.float32)
-    translate_vector_3 = tf.constant([0, 0], dtype=tf.float32)
-    translate_vector = tf.concat(
-        [translate_vector_1, translate_x, translate_vector_2, translate_y, translate_vector_3], 0)
-    translated_image = tf.contrib.image.transform(image_decoded, translate_vector, interpolation='BILINEAR')
-    image_decoded = tf.cond(translate_percentage < 0.1,
-                            lambda: translated_image, lambda: image_decoded)    
+        translate_y = tf.random_uniform(
+            [1], minval=(-1 * (IMAGE_SIZE / 5)), maxval=IMAGE_SIZE / 6, dtype=tf.float32)
+        translate_x = tf.random_uniform(
+            [1], minval=(-1 * (IMAGE_SIZE / 5)), maxval=IMAGE_SIZE / 6, dtype=tf.float32)
+        translate_vector_1 = tf.constant([1, 0], dtype=tf.float32)
+        translate_vector_2 = tf.constant([0, 1], dtype=tf.float32)
+        translate_vector_3 = tf.constant([0, 0], dtype=tf.float32)
+        translate_vector = tf.concat(
+            [translate_vector_1, translate_x, translate_vector_2, translate_y, translate_vector_3], 0)
+        translated_image = tf.contrib.image.transform(image_decoded, translate_vector, interpolation='BILINEAR')
+        image_decoded = tf.cond(translate_percentage < 0.1,
+                                lambda: translated_image, lambda: image_decoded)    
 
-    final_image = tf.image.per_image_standardization(image_decoded)
-    return final_image, tf.cast(parsed_features["label"], tf.int32)
+        final_image = tf.image.per_image_standardization(image_decoded)
+        return final_image
+
+    return tf.map_fn(_augment_single_image, raw_image_batch)
 
 
 def tower_loss(scope, images, labels):
@@ -319,7 +332,7 @@ def average_gradients(tower_grads):
     return average_grads
 
 
-def eval_once(sess, summary_writer, top_k_op, summary_op, acc_iterator, global_step, eval, num_examples, current_lr, lr):
+def eval_once(sess, summary_writer, top_k_op, summary_op, global_step, eval, num_examples, images, labels, current_lr, lr):
     """Run Eval once.
 
     Args:
@@ -341,9 +354,16 @@ def eval_once(sess, summary_writer, top_k_op, summary_op, acc_iterator, global_s
         true_count = 0  # Counts the number of correct predictions.
         total_sample_count = num_iter * 2 *FLAGS.batch_size
         step = 0
+        eval_index = 0
         while step < num_iter and not coord.should_stop():
             # predictions = sess.run([top_k_op], {lr: current_lr})
-            predictions = sess.run([top_k_op])
+
+            in_dic = {}
+            for x in xrange(FLAGS.num_gpus):
+                in_dic[images[x]], in_dic[labels[x]] = get_image_batch(eval_index, train = False)
+                eval_index = (eval_index + FLAGS.batch_size) if (eval_index + FLAGS.batch_size) < num_examples else 0
+
+            predictions = sess.run([top_k_op], in_dic)
             true_count += np.sum(predictions)
             step += 1
 
@@ -374,6 +394,23 @@ def eval_once(sess, summary_writer, top_k_op, summary_op, acc_iterator, global_s
 def train():
     """Train CIFAR-10 for a number of steps."""
     with tf.Graph().as_default(), tf.device('/cpu:0'):
+
+        images = []
+        labels = []
+        acc_images = []
+        acc_labels = []
+        eval_acc_images = []
+        eval_acc_labels = []                
+        for i in xrange(FLAGS.num_gpus):
+            images.append(_augment_input(tf.placeholder( dtype = tf.float32, shape=[FLAGS.batch_size,IMAGE_SIZE, IMAGE_SIZE]) ))
+            labels.append(tf.placeholder( dtype = tf.int32, shape=[FLAGS.batch_size]) )
+
+            acc_images.append(_normalize_input(tf.placeholder( dtype = tf.float32, shape=[FLAGS.batch_size,IMAGE_SIZE, IMAGE_SIZE]) ))
+            acc_labels.append(tf.placeholder( dtype = tf.int32, shape=[FLAGS.batch_size]) )
+
+            eval_acc_images.append(_normalize_input(tf.placeholder( dtype = tf.float32, shape=[FLAGS.batch_size,IMAGE_SIZE, IMAGE_SIZE]) ))
+            eval_acc_labels.append(tf.placeholder( dtype = tf.int32, shape=[FLAGS.batch_size]) )                        
+
         # Create a variable to count the number of train() calls. This equals the
         # number of batches processed * FLAGS.num_gpus.
         global_step = tf.get_variable(
@@ -395,66 +432,40 @@ def train():
         # Create an optimizer that performs gradient descent.
         opt = tf.contrib.opt.NadamOptimizer(lr)
 
-        # Get images and labels for CIFAR-10.
-
-        dataset = tf.data.TFRecordDataset(FLAGS.input_filename)
-        # Parse the record into tensors.
-        dataset = dataset.map(_parse_function)
-        dataset = dataset.shuffle(buffer_size=model.NUM_EXAMPLES_PER_EPOCH_FOR_TRAIN)
-        dataset = dataset.repeat()  # Repeat the input indefinitely.
-        dataset = dataset.prefetch(FLAGS.batch_size * 7)
-        dataset = dataset.batch(FLAGS.batch_size)
-        iterator = dataset.make_initializable_iterator()
-
-        # GET TRAINING ACCURACY
-        acc_dataset = tf.data.TFRecordDataset(FLAGS.input_filename)
-        # Parse the record into tensors.
-        acc_dataset = acc_dataset.map(_parse_function_no_distortion)
-        acc_dataset = acc_dataset.repeat()  # Repeat the input indefinitely.
-        acc_dataset = acc_dataset.batch(FLAGS.batch_size)
-        acc_iterator = acc_dataset.make_initializable_iterator()
-
-        eval_acc_dataset = tf.data.TFRecordDataset(FLAGS.eval_filename)
-        # Parse the record into tensors.
-        eval_acc_dataset = eval_acc_dataset.map(_parse_function_no_distortion)
-        # Repeat the input indefinitely.
-        eval_acc_dataset = eval_acc_dataset.repeat()
-        eval_acc_dataset = eval_acc_dataset.batch(FLAGS.batch_size)
-        eval_acc_iterator = eval_acc_dataset.make_initializable_iterator()
 
         # Calculate the gradients for each model tower.
         tower_grads = []
         acc_top_k_op_list = []
         eval_acc_top_k_op_list = []
+
+        acc_logits = [None] * FLAGS.num_gpus
+        eval_acc_logits = [None] * FLAGS.num_gpus
         with tf.variable_scope(tf.get_variable_scope()):
             for i in xrange(FLAGS.num_gpus):
                 with tf.device('/gpu:%d' % i):
                     with tf.name_scope('%s_%d' % (model.TOWER_NAME, i)) as scope:
                         # Dequeues one batch for the GPU
 
-                        image_batch, label_batch = iterator.get_next()
-
                         # Calculate the loss for one tower of the CIFAR model. This function
                         # constructs the entire CIFAR model but shares the variables across
                         # all towers.
-                        loss = tower_loss(scope, image_batch, label_batch)
+                        loss = tower_loss(scope, images[i], labels[i])
 
                         # Reuse variables for the next tower.
                         tf.get_variable_scope().reuse_variables()
 
-                        acc_images, acc_labels = acc_iterator.get_next()
-                        acc_logits = model.inference(
-                            acc_images, should_summarize=False)
+
+                        acc_logits[i] = model.inference(
+                            acc_images[i], should_summarize=False)
                         acc_top_k_op_list.append(tf.nn.in_top_k(
-                            acc_logits, acc_labels, 1))
+                            acc_logits[i], acc_labels[i], 1))
                         tf.get_variable_scope().reuse_variables()
 
 
-                        eval_acc_images, eval_acc_labels = eval_acc_iterator.get_next()
-                        eval_acc_logits = model.inference(
-                            eval_acc_images, should_summarize=False)
+                        eval_acc_logits[i] = model.inference(
+                            eval_acc_images[i], should_summarize=False)
                         eval_acc_top_k_op_list.append(tf.nn.in_top_k(
-                            eval_acc_logits, eval_acc_labels, 1))
+                            eval_acc_logits[i], eval_acc_labels[i], 1))
                         tf.get_variable_scope().reuse_variables()
 
                         # Retain the summaries from the final tower.
@@ -528,9 +539,6 @@ def train():
         # Start the queue runners.
         tf.train.start_queue_runners(sess=sess, coord=coord)
 
-        sess.run(acc_iterator.initializer)
-        sess.run(eval_acc_iterator.initializer)
-        sess.run(iterator.initializer)
 
         summary_writer = tf.summary.FileWriter(FLAGS.train_dir, sess.graph)
 
@@ -546,6 +554,7 @@ def train():
         exit_limit = 2
 
 
+        train_index = 0
         for step in xrange(FLAGS.max_steps):
             start_time = time.time()
             current_epoch = float((step * FLAGS.batch_size * FLAGS.num_gpus) //
@@ -559,11 +568,16 @@ def train():
                 if current_lr < 1e-6:
                     current_lr = 1e-6
 
+            in_dic = {}
+            for x in xrange(FLAGS.num_gpus):
+                in_dic[images[x]], in_dic[labels[x]] = get_image_batch(train_index, train = True)
+                train_index = (train_index + FLAGS.batch_size) if (train_index + FLAGS.batch_size) < len(t_sp) else 0
+
 
             # _, loss_value = sess.run(
             #     [train_op, loss], {lr: current_lr})
             _, loss_value = sess.run(
-                [train_op, loss])                     
+                [train_op, loss], in_dic)                     
             duration = time.time() - start_time
 
             assert not np.isnan(loss_value), 'Model diverged with loss = NaN'
@@ -592,9 +606,9 @@ def train():
 
             if step % 5000 == 0 and calculate_rates and step > 0:
                 acc_last_precision = eval_once(
-                    sess, summary_writer, acc_top_k_op, summary_op, acc_iterator, step, False, FLAGS.num_examples, current_lr, lr)
+                    sess, summary_writer, acc_top_k_op, summary_op, step, False, FLAGS.num_examples, acc_images, acc_labels, current_lr, lr)
                 eval_acc_last_precision = eval_once(
-                    sess, summary_writer, eval_acc_top_k_op, summary_op, eval_acc_iterator, step, True, FLAGS.eval_num_examples, current_lr, lr)
+                    sess, summary_writer, eval_acc_top_k_op, summary_op, step, True, FLAGS.eval_num_examples, eval_acc_images, eval_acc_labels, current_lr, lr)
 
                 if best_precision == 0.0:
                     precision_difference = 1.
@@ -630,7 +644,7 @@ def draw(sess, image_batch, label_batch):
                     * 255).astype(np.uint8)
 
         pImg = Image.fromarray(imagem_f, "RGB")
-        pImg = pImg.resize((INITIAL_IMAGE_SIZE, INITIAL_IMAGE_SIZE), Image.LANCZOS)
+        pImg = pImg.resize((IMAGE_SIZE, IMAGE_SIZE), Image.LANCZOS)
         pImg.show()
 
         raw_input()
@@ -638,8 +652,12 @@ def draw(sess, image_batch, label_batch):
 
 def main(argv=None):  # pylint: disable=unused-argument
     global model, model_name
+    global pickle_filename, t_sp, t_cl, v_sp, v_cl
     model_name = argv[1] 
     model = importlib.import_module(argv[1])
+
+    pickle_filename = argv[2]
+    t_sp, t_cl, v_sp, v_cl = pickle.load( open( pickle_filename, "rb" ) )
 
     initiate_flags()
 
