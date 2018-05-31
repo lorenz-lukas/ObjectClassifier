@@ -132,11 +132,11 @@ class BOV:
 
     def saveDictionary(self):
         data = np.array([self.name_dict,self.bov_helper.clf,self.bov_helper.kmeans_obj, self.bov_helper.scale]) # Dictionary, SVM model, Kmeans model,
-        with open('dictionary2.txt','w') as outfile:
+        with open('dictionary500_1.txt','w') as outfile:
             outfile.write(data.dumps())
 
     def loadDictionary(self):
-        with open('dictionary2.txt','r') as infile:
+        with open('dictionary500_1.txt','r') as infile:
             data = np.loads(infile.read())
         self.name_dict = data[0]
         self.bov_helper.clf = data[1]
@@ -150,10 +150,11 @@ if __name__ == '__main__':
     print "           Opencv 3.4.1 -- python 2.7                           "
     print "################################################################"
     print "\n\n"
+    bov = BOV(no_clusters=500)
     foundtxt = 0
     model = os.listdir('.')
     for i in xrange(len(model)):
-        if(model[i] == 'dictionary2.txt'):
+        if(model[i] == 'dictionary500_1.txt'):
             foundtxt = 1
     #if(foundtxt == 0):
         # train the model
