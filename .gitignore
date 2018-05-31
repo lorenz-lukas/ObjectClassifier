@@ -1,0 +1,6 @@
+Deep_Learning/Dataset/*
+Deep_Learning/Embeddings/*
+Deep_Learning/Old_models
+best/
+current/
+*.tfrecords

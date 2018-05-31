@@ -1,0 +1,2 @@
+By class accuracy: 0.247973
+Stdev: 0.199224
