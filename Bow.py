@@ -8,16 +8,19 @@ from sklearn.cluster import KMeans
 from sklearn.svm import SVC
 from sklearn.preprocessing import StandardScaler
 from matplotlib import pyplot as plt
+import ast
 
 sift_object = cv2.xfeatures2d.SIFT_create()
 
-def bow(directory,classes):
-    global sift_object
+s = SVC()
+k = KMeans(n_clusters = 20)
+
+def bow(directory,classes,no_clusters):
+    global sift_object,s,k
     imlist = []
     name_dic = {}
     train_labels = np.array([])
     descriptor_list = []
-    no_clusters = 20
     descriptor_vstack = None
     std = None
     # Getting images
@@ -34,25 +37,24 @@ def bow(directory,classes):
         print "Computing Features for ", classes[counter]
         images = imlist[label_count:label_count+5]
         for i in xrange(len(images)):
-            cv2.imshow("im", images[i])
-            cv2.waitKey(20)
+            #cv2.imshow("im", images[i])
+            #cv2.waitKey(20)
             train_labels = np.append(train_labels, label_count)
             kp, des = sift_object.detectAndCompute(images[i], None)
             descriptor_list.append(des)
         counter+=1
-
+    print "Total = ", len(classes)
     cv2.destroyAllWindows()
     # perform clustering
     print "\nClustering Features\n"
     bov_descriptor_stack = formatND(descriptor_list)
-    print "Using Kmeans to Performe Clustering\n"
-    k = KMeans(n_clusters = no_clusters)
+    print "Using Kmeans to Perform Clustering\n"
     kmeans_ret = k.fit_predict(bov_descriptor_stack)
     print "Preparing the Vocabulary\n"
     vocab = developVocabulary(n_clusters = no_clusters, n_images = len(imlist), descriptor_list = descriptor_list, kmeans_model = kmeans_ret)
     print "Data Normalization\n"
     # show vocabulary trained
-    plotHist(vocabulary = vocab, n_clusters = no_clusters)
+    #plotHist(vocabulary = vocab, n_clusters = no_clusters)
     # Data normalization
     if std is None:
         scale = StandardScaler().fit(vocab)
@@ -61,14 +63,10 @@ def bow(directory,classes):
         print "STD not none. External STD supplied"
         vocab = std.transform(vocab)
     model = train(vocabulary = vocab, labels = train_labels)
-    saveDictionary(m = model,v = vocab)
-    return model, vocab
+    saveDictionary(m = model,v = vocab,dic = name_dic)
+    return model, vocab, name_dic
 
 def formatND(l):
-    """
-    restructures list into vstack array of shape
-    M samples x N features for sklearn
-    """
     vStack = np.array(l[0])
     for remaining in l[1:]:
         vStack = np.vstack((vStack, remaining))
@@ -105,79 +103,93 @@ def plotHist(vocabulary, n_clusters):
     plt.show()
 
 def train(vocabulary, labels):
+    global s
     print "Training SVM"
-    print SVC()
+    print s
     #print "Train labels", labels
-    model = SVC().fit(vocabulary, labels)
-    print "Training completed"
+    model = s.fit(vocabulary, labels)
+    print "Training completed\n", model
     return model
 
-def saveDictionary(m,v):
-    data = {
-            'model': m,
-            'vocabulary': v
-    }
-    print data
-    with open('dictionary.txt', 'w') as outfile:
-        json.dump(data, outfile)
-############################### TEST METHODS ##################################
-def loadDictionary():
-    with open('dictionary.txt') as json_file:
-        data = json.load(json_file)
-    print data
-    return data
+def saveDictionary(m,v,dic):
+    global k
+    data = np.array([m,v,dic,k])
+    with open('dictionary.txt','w') as outfile:
+        outfile.write(data.dumps())
 
-def test(directory, classes, bw):
+############################### TEST METHODS ##################################
+
+def loadDictionary():
+    global k
+    with open('dictionary.txt','r') as infile:
+        data = np.loads(infile.read())
+    return data[0], data[1], data[2], data[3]
+
+def bow_model():
+    global k
+    m,v,dic,k = loadDictionary()
+    #print "\nClustering Features\n"
+    #bov_descriptor_stack = formatND(d)
+    #print "Using Kmeans to Perform Clustering\n"
+    #kmeans_ret = k.fit_predict(bov_descriptor_stack)
+    #model = train(vocabulary = v, labels = l)
+    return m,v,dic
+
+def test(directory, classes, bw, no_clusters):
+    print "\n\n\nTesting BOW model\n\n\n"
+    imlist = []
+    predictions = []
     for c in xrange(len(classes)):
         (db, Folders, img_list) = os.walk(directory+classes[c]+'/').next()
         for i in xrange(len(img_list)):
             img = cv2.imread(directory+classes[c]+'/'+img_list[i])
             imlist.append(img)
-    predictions = []
-    for word, imagelist in imlist.iteritems():
-        print "processing " ,word
-        for im in imlist:
-            # print imlist[0].shape, imlist[1].shape
-            print im.shape
-            cl = recognize(im)
-            print cl
-            predictions.append({
-                'image':im,
-                'class':cl,
-                'object_name':name_dict[str(int(cl[0]))]
-                })
-
+    name_dic = bw[2]
+    for im in imlist:
+        print "processing " ,classes[i]
+        #for im in imglist:
+        # print imlist[0].shape, imlist[1].shape
+        #print im.shape
+        cv2.imshow("im",im)
+        cv2.waitKey(300)
+        cl,vocab = recognize(im, bw[0], no_clusters,bw[2])
+        predictions.append({
+            'image':im,
+            'class':cl,
+            'object_name':name_dic[str(int(cl[0]))]
+            })
     print predictions
+    cv2.destroyAllWindows()
     for each in predictions:
         # cv2.imshow(each['object_name'], each['image'])
         # cv2.waitKey()
         # cv2.destroyWindow(each['object_name'])
-        #
         plt.imshow(cv2.cvtColor(each['image'], cv2.COLOR_GRAY2RGB))
         plt.title(each['object_name'])
         plt.show()
 
-def recognize(test_img):
-    kp, des = self.im_helper.features(test_img)
-    # print kp
-    print des.shape
+def recognize(test_img, model, no_clusters,name_dict):
+    global s,sift_object,k
+    kp, des = sift_object.detectAndCompute(test_img, None)
     # generate vocab for test image
-    vocab = np.array( [[ 0 for i in range(self.no_clusters)]])
+    vocab = np.array( [[ 0 for i in range(no_clusters)]])
     # locate nearest clusters for each of
-    # the visual word (feature) present in the image
-    # test_ret =<> return of kmeans nearest clusters for N features
-    test_ret = self.bov_helper.kmeans_obj.predict(des)
-    # print test_ret
-    # print vocab
+    test_ret = k.predict(des)
     for each in test_ret:
         vocab[0][each] += 1
-    print vocab
+    print "Vocabulary"
+    #print vocab
     # Scale the features
-    vocab = self.bov_helper.scale.transform(vocab)
+    #vocab = transform(float(vocab))
+    scale = StandardScaler().fit(vocab)
+    print scale
+    vocab = scale.transform(vocab)
+    #print vocab
     # predict the class of the image
-    lb = self.bov_helper.clf.predict(vocab)
-    # print "Image belongs to class : ", self.name_dict[str(int(lb[0]))]
-    return lb
+    lb = model.predict(vocab)
+    print lb
+    #print "Image belongs to class : ", name_dict[str(int(lb[0]))]
+    return lb,vocab
 
 def main():
     os.system('cls' if os.name == 'nt' else 'clear')
@@ -186,12 +198,18 @@ def main():
     print "           Opencv 3.4.1 -- python 2.7                           "
     print "################################################################"
     print "\n\n"
+    t = 0
     directory_train = 'CalTech101/Train/'
     directory_test = 'CalTech101/Test/'  # Same number of train classes
-    model = os.listdir('/')
-    print model
+    model = os.listdir('.')
     classes_train = os.listdir(directory_train)
-    bag = bow(directory = directory_train , classes = classes_train)
-    #test(classes = classes_train, directory = directory_test, bw = bag)
+    for i in xrange(len(model)):
+        if(model[i] == 'dictionary.txt'):
+            t = 1
+    if(t == 0):
+        bag = bow(directory = directory_train , classes = classes_train, no_clusters = 20)
+    else:
+        bag = bow_model()
+    test(classes = classes_train, directory = directory_test, bw = bag, no_clusters = 20)
 
 main()
