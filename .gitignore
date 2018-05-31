@@ -4,3 +4,6 @@ Deep_Learning/Old_models
 best/
 current/
 *.tfrecords
+NewCalTech101
+CalTech101
+caltech101
