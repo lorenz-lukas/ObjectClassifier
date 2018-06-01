@@ -117,10 +117,15 @@ class BOV:
             true_class = 0
             label_count += 1
         cv2.destroyAllWindows()
-        print "Number of positives = ", float(true)/float(len(self.images))
+	mean = []
+        print "Total mean accuracy= ", float(true)/float(len(self.images))
         for i in xrange(len(trueClass)):
-            print trueClass[i]/classes_size[i]
-        #for each in predictions:
+            print classes[i]
+            mean.append(trueClass[i]/classes_size[i])
+            print mean[i]
+        print "Classes mean accuracy= ", (np.array(mean)).mean()
+        print "Std = ", (np.array(mean)).std()
+        del mean        #for each in predictions:
         #    cv2.imshow(each['object_name'], each['image'])
         #    cv2.waitKey()
         #    cv2.destroyWindow(each['object_name'])
@@ -132,11 +137,11 @@ class BOV:
 
     def saveDictionary(self):
         data = np.array([self.name_dict,self.bov_helper.clf,self.bov_helper.kmeans_obj, self.bov_helper.scale]) # Dictionary, SVM model, Kmeans model,
-        with open('dictionary500_1.txt','w') as outfile:
+        with open('dictionary300_1.txt','w') as outfile:
             outfile.write(data.dumps())
 
     def loadDictionary(self):
-        with open('dictionary500_1.txt','r') as infile:
+        with open('dictionary300_1.txt','r') as infile:
             data = np.loads(infile.read())
         self.name_dict = data[0]
         self.bov_helper.clf = data[1]
@@ -154,10 +159,10 @@ if __name__ == '__main__':
     foundtxt = 0
     model = os.listdir('.')
     for i in xrange(len(model)):
-        if(model[i] == 'dictionary500_1.txt'):
+        if(model[i] == 'dictionary300_1.txt'):
             foundtxt = 1
-    #if(foundtxt == 0):
+    if(foundtxt == 0):
         # train the model
-    bov.trainModel()
+    	bov.trainModel()
     # test model
     bov.testModel(foundtxt)

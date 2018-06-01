@@ -126,12 +126,20 @@ class BOV:
             true_class = 0
             label_count += 1
         cv2.destroyAllWindows()
-        print "Training Set = ",trainset
-        print "Number of positives = ", float(true)/float(len(self.images))
+        print "\nTraining Set = ",trainset
+        print "Total mean accuracy= ", float(true)/float(len(self.images))
+        mean = []
         for i in xrange(len(trueClass)):
+            if classes[i] == 'inline_skate':
+                if trainset == 30:
+                    test_size[i] = 1
             print classes[i]
-            print trueClass[i]/test_size[i]
+            mean.append(trueClass[i]/test_size[i])
+            print mean[i]
+        print "Classes mean accuracy= ", (np.array(mean)).mean()
+        print "Std = ", (np.array(mean)).std()
         # Garbage collector
+        del mean
         del self.images
         del test_size
         del classes
@@ -159,7 +167,7 @@ if __name__ == '__main__':
     print "################################################################"
     print "\n\n"
     bov = BOV(no_clusters=20)
-    for train_set in xrange(10,35,5):
+    for train_set in xrange(5,35,5):
         foundtxt = 0
         model = os.listdir('.')
         for i in xrange(len(model)):
