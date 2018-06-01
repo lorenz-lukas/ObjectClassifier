@@ -22,7 +22,7 @@ class ImageHelpers:
 		return [keypoints, descriptors]
 
 class BOVHelpers:
-	def __init__(self, n_clusters = 500):
+	def __init__(self, n_clusters = 30):
 		self.n_clusters = n_clusters
 		self.kmeans_obj = KMeans(n_clusters = n_clusters)
 		self.kmeans_ret = None

@@ -30,7 +30,7 @@ E os resultados são gravados em Recently_evaluated.
 
 - Execução do programa: python bow1.py 
 
-- Organização do diretório: Organização padrão das duas bases de dados fornecidas, CalTech 101 (http://www.vision.caltech.edu/Image_Datasets/Caltech101/) e a disponibilizada pelo professor. 
+- Organização do diretório: Organização padrão das duas bases de dados fornecidas, caltech101 (http://www.vision.caltech.edu/Image_Datasets/Caltech101/) e a disponibilizada pelo professor (CalTech101). Colocar os programas "bow1.py", "helpers.py", "bow2.py" e "helpers2.py" no mesmo diretório que as bases de dados e dos .txt.
 
 OBS: para se obter os resultados adquiridos, executar o programa como listado, mudando no código fonte os arquivos .txt de base, onde o primeiro número corresponde ao K utilizado e o segundo a porcentagem, em inteiros, correspondente do dataset. 
   EX: dictionary_500_1.txt corresponte a K = 500 para 100% das classes, ou seja 102 classes.
